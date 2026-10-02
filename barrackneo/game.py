@@ -47,38 +47,23 @@ class Floater:
     color: tuple
 
 
-def auto_dir(world: World, rng: random.Random):
-    legal = world.legal_moves()
-    if not legal:
-        return (0, 0)
-    px, py = world.player_x, world.player_y
-
-    def kind(direction):
-        return world.classify(px + direction[0], py + direction[1])
-
-    if world.drawing:
-        if world.nearest_threat() < 42:
-            backs = [d for d in legal if kind(d) in ("back", "cancel")]
-            if backs:
-                return backs[0]
-        closes = [d for d in legal if kind(d) == "close"]
-        long_enough = len(world.trail) > 12
-        if closes and long_enough and (world.nearest_threat() < 96 or rng.random() < 0.22):
-            return rng.choice(closes)
-        if world.facing in legal and kind(world.facing) == "draw" and rng.random() < 0.9:
-            return world.facing
-        draws = [d for d in legal if kind(d) == "draw"]
-        if draws:
-            return rng.choice(draws)
-        return rng.choice(legal)
-
-    if rng.random() < 0.018:
-        dives = [d for d in legal if kind(d) == "dive"]
-        if dives:
-            return rng.choice(dives)
-    if world.facing in legal and rng.random() < 0.93:
-        return world.facing
-    return rng.choice(legal)
+def _flee_vector(world: World) -> tuple[float, float]:
+    nearest = None
+    nearest_d = 1e9
+    for ball in world.balls:
+        if ball.phased:
+            continue
+        dist = math.hypot(ball.x - world.px, ball.y - world.py)
+        if dist < nearest_d:
+            nearest_d = dist
+            nearest = ball
+    if nearest is None:
+        return (0.0, 0.0)
+    dx = world.px - nearest.x
+    dy = world.py - nearest.y
+    if abs(dx) >= abs(dy):
+        return (1.0 if dx > 0 else -1.0, 0.0)
+    return (0.0, 1.0 if dy > 0 else -1.0)
 
 
 def _load_best() -> int:
@@ -111,6 +96,8 @@ class Game:
         self.banner = 0.0
         self.time = 0.0
         self.last_dir = None
+        self.demo_dir = (1.0, 0.0)
+        self.demo_hold = 0.0
         self.autoplay = False
         self.running = True
         self.checkpoint = (1, 0, 3, 40000)
@@ -171,6 +158,10 @@ class Game:
                 direction = KEYMAP.get(event.key)
                 if direction is not None and direction == self.last_dir:
                     self.last_dir = None
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                self._mouse_down(event.button)
+            elif event.type == pygame.MOUSEWHEEL and self.state == "play":
+                self._request_rotate()
 
     def _keydown(self, key: int) -> None:
         direction = KEYMAP.get(key)
@@ -179,12 +170,41 @@ class Game:
             return
         if key == pygame.K_ESCAPE:
             self._escape()
-        elif key in (pygame.K_RETURN, pygame.K_SPACE):
+        elif key == pygame.K_RETURN:
             self._confirm()
+        elif key == pygame.K_SPACE:
+            if self.state == "play":
+                self._request_fire()
+            else:
+                self._confirm()
         elif key == pygame.K_r and self.state == "pause":
             self.restart_sector()
         elif key == pygame.K_q and self.state in ("pause", "title"):
             self.running = False
+        elif key in (pygame.K_q, pygame.K_f) and self.state == "play":
+            self._request_rotate()
+
+    def _mouse_down(self, button: int) -> None:
+        if self.state == "title":
+            if button == 1:
+                self.start(1)
+            return
+        if self.state == "play":
+            if button == 1:
+                self._request_fire()
+            elif button == 3:
+                self._request_rotate()
+            return
+        if button == 1:
+            self._confirm()
+
+    def _request_fire(self) -> None:
+        if self.world is not None and self.state == "play":
+            self.world.want_fire = True
+
+    def _request_rotate(self) -> None:
+        if self.world is not None and self.state == "play":
+            self.world.want_rotate = True
 
     def _escape(self) -> None:
         if self.state == "title":
@@ -218,14 +238,17 @@ class Game:
     def _simulate(self, dt: float) -> None:
         if self.state == "title":
             self.demo_age += dt
-            self.demo.desired = auto_dir(self.demo, self.rng)
+            self._demo_ai(self.demo, dt)
             self.demo.update(dt)
             self._consume(self.demo, audible=False)
             if self.demo.phase != "play" or self.demo_age > 46:
                 self._reset_demo()
         elif self.state == "play" and self.world is not None:
             self.banner = max(0.0, self.banner - dt)
-            self.world.desired = self._aim(self.world)
+            if self.autoplay:
+                self._demo_ai(self.world, dt)
+            else:
+                self._steer(self.world)
             self.world.update(dt)
             self._consume(self.world, audible=True)
             if self.world.phase == "cleared":
@@ -235,13 +258,39 @@ class Game:
         self._tick_fx(dt)
         self.shake = max(0.0, self.shake - dt * 26)
 
-    def _aim(self, world: World):
-        if self.autoplay:
-            return auto_dir(world, self.rng)
+    def _demo_ai(self, world: World, dt: float) -> None:
+        world.pointer = None
+        self.demo_hold -= dt
+        if world.building:
+            world.move = (0.0, 0.0)
+            return
+        threat = world.nearest_threat()
+        if threat < 80:
+            world.move = _flee_vector(world)
+            return
+        if self.demo_hold <= 0:
+            self.demo_dir = self.rng.choice(((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)))
+            self.demo_hold = self.rng.uniform(0.4, 1.2)
+            if self.rng.random() < 0.35:
+                world.want_rotate = True
+        world.move = self.demo_dir
+        if threat > 110 and self.rng.random() < 0.018:
+            world.want_fire = True
+
+    def _steer(self, world: World) -> None:
         direction = self._keys_dir()
-        if direction == (0, 0):
-            direction = self._mouse_dir(world)
-        return direction
+        if direction != (0, 0):
+            world.move = direction
+            world.pointer = None
+            return
+        world.move = (0.0, 0.0)
+        world.pointer = self._mouse_pointer()
+
+    def _mouse_pointer(self) -> tuple[float, float] | None:
+        mx, my = pygame.mouse.get_pos()
+        if FIELD_X <= mx < FIELD_X + FIELD_W and FIELD_Y <= my < FIELD_Y + FIELD_H:
+            return (mx - FIELD_X, my - FIELD_Y)
+        return None
 
     def _keys_dir(self):
         keys = pygame.key.get_pressed()
@@ -254,36 +303,22 @@ class Game:
                 return direction
         return (0, 0)
 
-    def _mouse_dir(self, world: World):
-        if not pygame.mouse.get_pressed()[0]:
-            return (0, 0)
-        mx, my = pygame.mouse.get_pos()
-        cx, cy = world.render_cell()
-        sx = FIELD_X + (cx + 0.5) * CELL
-        sy = FIELD_Y + (cy + 0.5) * CELL
-        dx, dy = mx - sx, my - sy
-        if mx > FIELD_X + FIELD_W or abs(dx) < 8 and abs(dy) < 8:
-            return (0, 0)
-        if abs(dx) > abs(dy):
-            return (1 if dx > 0 else -1, 0)
-        return (0, 1 if dy > 0 else -1)
-
     def _consume(self, world: World, audible: bool) -> None:
         accent = self.renderer.accent
         for event in world.events:
             kind = event[0]
-            if kind == "dive" and audible:
+            px, py = world.render_pixel()
+            if kind == "fire" and audible:
                 self.audio.play("dive")
-            elif kind == "cancel" and audible:
+            elif kind == "rotate" and audible:
+                self.audio.play("rotate")
+            elif kind == "dodge" and audible:
                 self.audio.play("cancel")
             elif kind == "capture":
                 _region, gain, samples = event[1], event[2], event[3]
                 if audible:
                     self.audio.play("capture_big" if _region > 220 else "capture")
-                    cx, cy = world.render_cell()
-                    self.floaters.append(
-                        Floater((cx + 0.5) * CELL - 10, (cy + 0.5) * CELL - 28, f"+{gain:,}", 0.95, (255, 228, 150))
-                    )
+                    self.floaters.append(Floater(px - 10, py - 28, f"+{gain:,}", 0.95, (255, 228, 150)))
                 color = (255, 210, 120) if _region > 220 else accent
                 for x, y in samples:
                     self._burst((x + 0.5) * CELL, (y + 0.5) * CELL, color, 2, 70)
@@ -292,19 +327,18 @@ class Game:
             elif kind == "hurt" and audible:
                 self.audio.play("hurt")
                 self.shake = 11
-                cx, cy = world.render_cell()
-                self._burst((cx + 0.5) * CELL, (cy + 0.5) * CELL, (255, 80, 90), 28, 160)
+                self._burst(px, py, (255, 80, 90), 28, 160)
             elif kind == "shield" and audible:
                 self.audio.play("shield")
                 self.shake = 6
+                self._burst(px, py, (120, 235, 255), 18, 120)
             elif kind == "power":
                 if audible:
                     self.audio.play("power")
                 label, color, _hint = PICKUPS.get(event[1], ("", accent, ""))
-                cx, cy = world.render_cell()
-                self._burst((cx + 0.5) * CELL, (cy + 0.5) * CELL, color, 16, 110)
+                self._burst(px, py, color, 16, 110)
                 if audible:
-                    self.floaters.append(Floater((cx + 0.5) * CELL, (cy + 0.5) * CELL - 20, label, 0.9, color))
+                    self.floaters.append(Floater(px, py - 20, label, 0.9, color))
                 self._note_score(world.score)
             elif kind == "split" and audible:
                 self.audio.play("split")
@@ -371,6 +405,7 @@ class Game:
         self.demo = World(level=3, god=True, rng=self.rng)
         self.demo.warmup = 0.0
         self.demo_age = 0.0
+        self.demo_hold = 0.0
 
     def _draw(self) -> None:
         shown = self.demo if self.state == "title" or self.world is None else self.world

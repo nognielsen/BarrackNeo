@@ -53,6 +53,7 @@ class Audio:
                 pygame.mixer.init(22050, -16, 1, 512)
             self.sounds = {
                 "dive": _tone(720, 45, 0.12),
+                "rotate": _tone(540, 28, 0.08),
                 "cancel": _tone(280, 50, 0.1, slide=-80),
                 "capture": _chord((523, 659, 784), 140, 0.16),
                 "capture_big": _chord((523, 659, 784, 1046), 240, 0.18),

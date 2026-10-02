@@ -1,6 +1,6 @@
 """Rules tests that do not open a window."""
 
-from barrackneo.board import FILLED, Board
+from barrackneo.board import FILLED, TRAIL, Board
 from barrackneo.settings import CELL
 from barrackneo.world import Ball, World
 
@@ -29,80 +29,155 @@ def test_seal_keeps_both_sides_when_both_hold_enemies() -> None:
     assert board.grid[6][10] == FILLED
 
 
-def _advance(world: World, direction: tuple[int, int], moves: int) -> None:
-    """Step the sim until the player has committed `moves` cell changes."""
-    world.desired = direction
-    done = 0
-    previous = (world.player_x, world.player_y, world.lives, world.phase)
-    for _ in range(moves * 6 + 8):
+def _quiet(world: World) -> None:
+    world.warmup = 0.0
+    world.quota = 0.99
+
+
+def _until_idle(world: World, limit: int = 60) -> None:
+    for _ in range(limit):
         world.update(0.05)
-        current = (world.player_x, world.player_y, world.lives, world.phase)
-        if current != previous:
-            done += 1
-            previous = current
-        if done >= moves or world.phase != "play":
+        if world.phase != "play" or not world.building:
             return
+
+
+def test_rotate_flips_the_blaster() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    assert world.horizontal
+    world.want_rotate = True
+    world.update(0.05)
+    assert world.horizontal is False
+    world.want_rotate = True
+    world.want_fire = True
+    world.update(0.05)
+    assert world.horizontal
+    assert world.building
+    world.want_rotate = True
+    world.update(0.05)
+    assert world.building
+    assert world.horizontal
 
 
 def test_full_cut_clears_an_empty_sector() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
-    _advance(world, (0, 1), 20)
+    world.warmup = 0.0
+    world.want_rotate = True
+    world.want_fire = True
+    for _ in range(40):
+        world.update(0.05)
+        if world.phase != "play":
+            break
     assert world.phase == "cleared"
+    assert not world.building
     assert world.board.grid[8][5] == FILLED
     assert world.board.grid[8][18] == FILLED
     assert world.score > 0
 
 
-def test_backtrack_cancels_a_one_cell_line() -> None:
-    world = World(level=1, populate=False, cols=24, rows=16)
-    _advance(world, (0, 1), 1)
-    assert world.drawing
-    x = world.player_x
-    _advance(world, (0, -1), 1)
-    assert not world.drawing
-    assert world.trail == []
-    assert world.board.grid[2][x] != 2
-
-
 def test_ball_on_the_line_kills_instead_of_claiming() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
-    world.lives = 3
-    px, py = world.board.cell_center(world.player_x, world.player_y + 1)
-    world.balls.append(Ball(x=px, y=py, vx=0, vy=0, speed=0, kind="ball"))
-    _advance(world, (0, 1), 1)
+    _quiet(world)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    px, py = world.board.cell_center(cx + 3, cy)
+    world.balls.append(Ball(x=px, y=py, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    before = world.claim_ratio()
+    world.want_fire = True
+    _until_idle(world)
     assert world.lives == 2
-    assert not world.drawing
+    assert not world.building
     assert world.phase == "play"
+    assert world.claim_ratio() == before
+    assert all(cell != TRAIL for row in world.board.grid for cell in row)
 
 
 def test_shield_spends_instead_of_a_life() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
     world.shield = True
-    px, py = world.board.cell_center(world.player_x, world.player_y + 1)
-    world.balls.append(Ball(x=px, y=py, vx=0, vy=0, speed=0, kind="ball"))
-    _advance(world, (0, 1), 1)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    px, py = world.board.cell_center(cx + 3, cy)
+    world.balls.append(Ball(x=px, y=py, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    world.want_fire = True
+    _until_idle(world)
     assert world.lives == 3
     assert world.shield is False
-    assert not world.drawing
+    assert not world.building
+    assert world.phase == "play"
+
+
+def test_ball_on_the_blaster_costs_a_life() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
+    world.balls.append(Ball(x=world.px, y=world.py, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    world.update(0.05)
+    assert world.lives == 2
+    assert world.phase == "play"
+    assert not world.building
 
 
 def test_enemy_side_stays_open() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
-    world.quota = 0.99
-    world.drawing = True
-    world.draw_origin = (12, 1)
-    world.trail = [(12, y) for y in range(2, 14)]
-    for x, y in world.trail:
-        world.board.set_cell(x, y, 2)
-    world.player_x, world.player_y = 12, 14
-    cx, cy = world.board.cell_center(18, 8)
-    world.balls.append(Ball(x=cx, y=cy, vx=40, vy=20, speed=80, kind="ball"))
-    world._close_line()
-    assert world.board.grid[8][6] == FILLED
-    assert world.board.grid[8][18] != FILLED
+    _quiet(world)
+    world.want_rotate = True
+    world.update(0.05)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    bx, by = world.board.cell_center(cx + 6, cy)
+    world.balls.append(Ball(x=bx, y=by, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    world.want_fire = True
+    _until_idle(world)
     assert world.phase == "play"
-    # The ball still has somewhere to sit.
-    assert not world.board.circle_hits_solid(world.balls[0].x, world.balls[0].y, world.balls[0].radius)
+    assert world.board.grid[cy][cx - 4] == FILLED
+    assert world.board.grid[cy][cx + 6] != FILLED
+    ball = world.balls[0]
+    assert not world.board.circle_hits_solid(ball.x, ball.y, ball.radius)
+
+
+def test_line_stops_at_an_existing_wall() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    for y in range(world.board.rows):
+        world.board.set_cell(cx + 4, y, FILLED)
+    bx, by = world.board.cell_center(cx + 8, cy)
+    world.balls.append(Ball(x=bx, y=by, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    world.want_fire = True
+    _until_idle(world)
+    assert not world.building
+    assert world.phase == "play"
+    assert world.lives == 3
+    assert world.board.grid[cy][cx + 3] == FILLED
+    assert world.board.grid[cy][cx + 5] != FILLED
+
+
+def test_slow_cuts_enemy_motion() -> None:
+    px, py = 80.0, 68.0
+
+    def place() -> World:
+        world = World(level=1, populate=False, cols=24, rows=16)
+        world.warmup = 0.0
+        world.balls.append(Ball(x=px, y=py, vx=100.0, vy=0.0, speed=100.0, kind="ball"))
+        return world
+
+    slowed = place()
+    slowed.slow = 5.0
+    slowed.update(0.05)
+    plain = place()
+    plain.update(0.05)
+    assert plain.balls[0].x - px > (slowed.balls[0].x - px) * 1.5
+
+
+def test_haste_builds_the_line_faster() -> None:
+    slow = World(level=1, populate=False, cols=24, rows=16)
+    fast = World(level=1, populate=False, cols=24, rows=16)
+    slow.warmup = 0.0
+    fast.warmup = 0.0
+    fast.haste = 5.0
+    slow.want_fire = True
+    fast.want_fire = True
+    slow.update(0.05)
+    fast.update(0.05)
+    assert slow.building and fast.building
+    assert len(fast.trail) > len(slow.trail)
 
 
 def test_cell_size_matches_centers() -> None:
@@ -116,11 +191,15 @@ def main() -> None:
     tests = [
         test_seal_fills_the_empty_side,
         test_seal_keeps_both_sides_when_both_hold_enemies,
+        test_rotate_flips_the_blaster,
         test_full_cut_clears_an_empty_sector,
-        test_backtrack_cancels_a_one_cell_line,
         test_ball_on_the_line_kills_instead_of_claiming,
         test_shield_spends_instead_of_a_life,
+        test_ball_on_the_blaster_costs_a_life,
         test_enemy_side_stays_open,
+        test_line_stops_at_an_existing_wall,
+        test_slow_cuts_enemy_motion,
+        test_haste_builds_the_line_faster,
         test_cell_size_matches_centers,
     ]
     for test in tests:

@@ -1,25 +1,30 @@
-"""Simulation: the line, the swarm, and the score. No drawing in here."""
+"""Simulation: the blaster, the swarm, and the score. No drawing in here.
+
+The blaster moves through open field. Fire sends a wall out both ends. The wall
+grows until each end hits the border or an existing line, then every pocket
+with no enemy in it fills. A ball that touches the blaster, or the wall while
+it is still growing, costs a life and the unfinished wall comes back down.
+"""
 
 import math
 import random
-from collections import deque
 from dataclasses import dataclass
 
-from barrackneo.board import DIRS, EMPTY, TRAIL, Board
+from barrackneo.board import EMPTY, TRAIL, Board
 from barrackneo.settings import (
     BALL_RADIUS,
     BALL_SPEED,
-    BOSCO_RATE,
+    BLASTER_HIT,
+    BLASTER_SPEED,
+    BUILD_RATE,
     CELL,
     COMBO_WINDOW,
     EXTRA_LIFE_SCORE,
-    HASTE_MULT,
+    HASTE_BUILD,
     MAX_BALLS,
     MAX_COMBO,
     MAX_LIVES,
-    MAX_STEPS_PER_FRAME,
     PICKUP_LIFE,
-    PLAYER_RATE,
     START_LIVES,
     spec_for,
 )
@@ -34,20 +39,12 @@ class Ball:
     speed: float
     kind: str
     radius: float = BALL_RADIUS
-    visual: float = 9.0
+    visual: float = 16.0
     generation: int = 0
     can_split: bool = False
     cycle: float = 0.0
     phased: bool = False
     warning: bool = False
-
-
-@dataclass
-class Bosco:
-    x: int
-    y: int
-    acc: float = 0.0
-    facing: tuple = (1, 0)
 
 
 @dataclass
@@ -76,18 +73,19 @@ class World:
         self.speed_mult = self.spec.speed
         self.god = god
         self.board = Board(cols, rows) if cols and rows else Board()
-        self.player_x = self.board.cols // 2
-        self.player_y = 1
-        self.from_x = self.player_x
-        self.from_y = self.player_y
-        self.facing = (1, 0)
-        self.desired = (0, 0)
-        self.move_acc = 0.0
-        self.drawing = False
+        cx = self.board.cols // 2
+        cy = self.board.rows // 2
+        self.px, self.py = self.board.cell_center(cx, cy)
+        self.horizontal = True
+        self.move = (0.0, 0.0)
+        self.pointer: tuple[float, float] | None = None
+        self.want_fire = False
+        self.want_rotate = False
+        self.building = False
         self.trail: list[tuple[int, int]] = []
-        self.draw_origin: tuple[int, int] | None = None
+        self.arms: list[dict] = []
+        self.build_acc = 0.0
         self.balls: list[Ball] = []
-        self.boscos: list[Bosco] = []
         self.pickups: list[Pickup] = []
         self.score = 0
         self.lives = START_LIVES
@@ -100,7 +98,7 @@ class World:
         self.slow = 0.0
         self.mult = 0.0
         self.invuln = 0.0
-        self.warmup = 1.3 if level == 1 else 0.7
+        self.warmup = 1.1 if level == 1 else 0.55
         self.pickup_timer = 2.2 if populate else 1e9
         self.phase = "play"
         self.events: list[tuple] = []
@@ -110,94 +108,99 @@ class World:
     def claim_ratio(self) -> float:
         return self.board.ratio()
 
-    def step_interval(self) -> float:
-        rate = PLAYER_RATE * (HASTE_MULT if self.haste > 0 else 1.0)
-        return 1.0 / rate
+    def render_pixel(self) -> tuple[float, float]:
+        return self.px, self.py
 
-    def update(self, dt: float) -> None:
-        self.events.clear()
-        if self.phase != "play":
-            return
-        dt = min(dt, 0.05)
-        self._tick_timers(dt)
-        self._move_player(dt)
-        if self.phase != "play":
-            return
-        enemy_dt = self._enemy_dt(dt)
-        for ball in self.balls:
-            self._update_phantom(ball, enemy_dt)
-            if ball.kind == "seeker":
-                self._steer_seeker(ball, enemy_dt)
-            self._move_ball(ball, enemy_dt)
-        self._separate_balls()
-        if self.drawing and self._trail_hit():
-            self._hurt("swarm")
-            return
-        self._move_boscos(enemy_dt)
-        if self.phase != "play":
-            return
-        self._update_pickups(dt)
-        if not self.drawing and self.claim_ratio() + 1e-6 >= self.quota:
-            self._clear_sector()
+    def ordered_trail(self) -> list[tuple[int, int]]:
+        cells = list(self.trail)
+        if self.horizontal:
+            cells.sort(key=lambda cell: cell[0])
+        else:
+            cells.sort(key=lambda cell: cell[1])
+        return cells
 
-    def classify(self, nx: int, ny: int) -> str | None:
-        if not self.board.in_bounds(nx, ny):
-            return None
-        dest = self.board.grid[ny][nx]
-        if not self.drawing:
-            if dest == 1 and self.board.exposed(nx, ny):
-                return "walk"
-            if dest == 0 and self.board.exposed(self.player_x, self.player_y):
-                return "dive"
-            return None
-        if len(self.trail) >= 2 and (nx, ny) == self.trail[-2]:
-            return "back"
-        if len(self.trail) == 1 and (nx, ny) == self.draw_origin:
-            return "cancel"
-        if dest == 0:
-            return "draw"
-        if dest == 1:
-            return "close"
-        return None
-
-    def legal_moves(self) -> list[tuple[int, int]]:
-        found = []
-        for dx, dy in DIRS:
-            if self.classify(self.player_x + dx, self.player_y + dy):
-                found.append((dx, dy))
-        return found
+    def aim_cells(self) -> list[tuple[int, int]]:
+        """Empty cells the next shot would cross, including the blaster."""
+        if self.building or self.phase != "play":
+            return []
+        cx, cy = self.board.cell_at(self.px, self.py)
+        if not self.board.in_bounds(cx, cy) or self.board.grid[cy][cx] != EMPTY:
+            return []
+        cells = [(cx, cy)]
+        for dx, dy in self._axes():
+            x, y = cx, cy
+            for _ in range(max(self.board.cols, self.board.rows)):
+                x += dx
+                y += dy
+                if not self.board.in_bounds(x, y) or self.board.grid[y][x] != EMPTY:
+                    break
+                cells.append((x, y))
+        return cells
 
     def nearest_threat(self) -> float:
-        if not self.drawing or not self.trail:
-            return 9999.0
-        tx, ty = self.board.cell_center(*self.trail[-1])
         best = 9999.0
         for ball in self.balls:
             if ball.phased:
                 continue
-            best = min(best, math.hypot(ball.x - tx, ball.y - ty))
-        for bosco in self.boscos:
-            bx, by = self.board.cell_center(bosco.x, bosco.y)
-            best = min(best, math.hypot(bx - tx, by - ty))
+            best = min(best, math.hypot(ball.x - self.px, ball.y - self.py))
+            if self.building:
+                for cell in self.trail:
+                    cx, cy = self.board.cell_center(*cell)
+                    best = min(best, math.hypot(ball.x - cx, ball.y - cy))
         return best
-
-    def render_cell(self) -> tuple[float, float]:
-        if (self.from_x, self.from_y) == (self.player_x, self.player_y):
-            return float(self.player_x), float(self.player_y)
-        t = min(1.0, self.move_acc / self.step_interval())
-        return (
-            self.from_x + (self.player_x - self.from_x) * t,
-            self.from_y + (self.player_y - self.from_y) * t,
-        )
 
     def roster(self) -> list[tuple[str, int]]:
         counts: dict[str, int] = {}
         for ball in self.balls:
             counts[ball.kind] = counts.get(ball.kind, 0) + 1
-        if self.boscos:
-            counts["bosco"] = len(self.boscos)
         order = ("ball", "seeker", "splitter", "phantom", "bosco")
         return [(name, counts[name]) for name in order if name in counts]
+
+    def update(self, dt: float) -> None:
+        self.events.clear()
+        if self.phase != "play":
+            return
+        dt = min(max(dt, 0.0), 0.05)
+        self._tick_timers(dt)
+        if self.want_rotate:
+            self._rotate()
+        if self.want_fire:
+            self._fire()
+        self.want_fire = False
+        self.want_rotate = False
+        if self.building:
+            self._grow(dt)
+        else:
+            self._move_blaster(dt)
+            self._collect_blaster()
+        if self.phase != "play":
+            return
+        if self._threatened():
+            self._hurt("swarm")
+            if self.phase != "play":
+                return
+        enemy_dt = self._enemy_dt(dt)
+        for ball in self.balls:
+            self._update_phantom(ball, enemy_dt)
+            target = self._chase_target(ball)
+            if target is not None and enemy_dt > 0:
+                turn = 2.4 if ball.kind == "bosco" else 1.75
+                self._steer(ball, enemy_dt, target, turn)
+            self._move_ball(ball, enemy_dt)
+        self._separate_balls()
+        if self.phase != "play":
+            return
+        if self._threatened():
+            self._hurt("swarm")
+            return
+        self._update_pickups(dt)
+        if not self.building and self.claim_ratio() + 1e-6 >= self.quota:
+            self._clear_sector()
+
+    def _axes(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        if self.horizontal:
+            return ((-1, 0), (1, 0))
+        return ((0, -1), (0, 1))
 
     def _tick_timers(self, dt: float) -> None:
         self.invuln = max(0.0, self.invuln - dt)
@@ -220,98 +223,69 @@ class World:
         else:
             scaled = dt
         if self.warmup > 0:
-            scaled *= 0.15
+            scaled *= 0.2
         return scaled
 
-    def _move_player(self, dt: float) -> None:
-        if self.desired == (0, 0):
-            self.move_acc = 0.0
-            self.from_x = self.player_x
-            self.from_y = self.player_y
+    def _rotate(self) -> None:
+        if self.building or self.phase != "play":
             return
-        self.move_acc += dt
-        interval = self.step_interval()
+        self.horizontal = not self.horizontal
+        self.events.append(("rotate",))
+
+    def _fire(self) -> None:
+        if self.building or self.phase != "play" or self.invuln > 0:
+            return
+        cx, cy = self.board.cell_at(self.px, self.py)
+        if not self.board.in_bounds(cx, cy) or self.board.grid[cy][cx] != EMPTY:
+            return
+        self.building = True
+        self.trail = [(cx, cy)]
+        self.board.set_cell(cx, cy, TRAIL)
+        self.arms = []
+        for dx, dy in self._axes():
+            self.arms.append({"dx": dx, "dy": dy, "x": cx, "y": cy, "done": False})
+        self.build_acc = 0.0
+        self._collect_at(cx, cy)
+        self.events.append(("fire",))
+
+    def _grow(self, dt: float) -> None:
+        rate = BUILD_RATE * (HASTE_BUILD if self.haste > 0 else 1.0)
+        self.build_acc += dt * rate
         steps = 0
-        while self.move_acc >= interval and steps < MAX_STEPS_PER_FRAME:
-            self.move_acc -= interval
+        while self.build_acc >= 1.0 and steps < 8 and self.building:
+            self.build_acc -= 1.0
             steps += 1
-            if not self._try_step():
-                self.move_acc = 0.0
-                self.from_x = self.player_x
-                self.from_y = self.player_y
-                break
-            if self.phase != "play":
-                break
-            if self.drawing and self._trail_hit():
-                self._hurt("swarm")
-                break
+            for arm in self.arms:
+                if arm["done"]:
+                    continue
+                nx = arm["x"] + arm["dx"]
+                ny = arm["y"] + arm["dy"]
+                if not self.board.in_bounds(nx, ny) or self.board.grid[ny][nx] != EMPTY:
+                    arm["done"] = True
+                    continue
+                self.board.set_cell(nx, ny, TRAIL)
+                self.trail.append((nx, ny))
+                arm["x"], arm["y"] = nx, ny
+                self._collect_at(nx, ny)
+            if self._threatened():
+                self._hurt("line")
+                return
+            if self.arms and all(arm["done"] for arm in self.arms):
+                self._finish_line()
+                return
 
-    def _try_step(self) -> bool:
-        dx, dy = self.desired
-        if dx == 0 and dy == 0:
-            return False
-        nx = self.player_x + dx
-        ny = self.player_y + dy
-        kind = self.classify(nx, ny)
-        if kind is None:
-            return False
-        if kind == "walk":
-            self._move_to(nx, ny)
-            return True
-        if kind == "dive":
-            self.draw_origin = (self.player_x, self.player_y)
-            self.drawing = True
-            self.board.set_cell(nx, ny, TRAIL)
-            self.trail = [(nx, ny)]
-            self._move_to(nx, ny)
-            self._collect_at(nx, ny)
-            self.events.append(("dive",))
-            return True
-        if kind == "draw":
-            self.board.set_cell(nx, ny, TRAIL)
-            self.trail.append((nx, ny))
-            self._move_to(nx, ny)
-            self._collect_at(nx, ny)
-            return True
-        if kind == "back":
-            cx, cy = self.trail.pop()
-            self.board.set_cell(cx, cy, EMPTY)
-            self._move_to(nx, ny)
-            return True
-        if kind == "cancel":
-            cx, cy = self.trail.pop()
-            self.board.set_cell(cx, cy, EMPTY)
-            self.trail.clear()
-            self.drawing = False
-            self.draw_origin = None
-            self._move_to(nx, ny)
-            self.events.append(("cancel",))
-            return True
-        if kind == "close":
-            self._move_to(nx, ny)
-            self._close_line()
-            return True
-        return False
-
-    def _move_to(self, nx: int, ny: int) -> None:
-        self.from_x = self.player_x
-        self.from_y = self.player_y
-        self.facing = (nx - self.player_x, ny - self.player_y)
-        self.player_x = nx
-        self.player_y = ny
-
-    def _close_line(self) -> None:
-        if not self.drawing:
+    def _finish_line(self) -> None:
+        if not self.building:
             return
-        if self._trail_hit():
-            self._hurt("swarm")
+        if self._threatened():
+            self._hurt("line")
             return
-        blocked = self._blocker_cells()
         trail = list(self.trail)
-        region, samples = self.board.seal(trail, blocked)
-        self.drawing = False
+        region, samples = self.board.seal(trail, self._blocker_cells())
+        self.building = False
         self.trail.clear()
-        self.draw_origin = None
+        self.arms.clear()
+        self.build_acc = 0.0
         self._collect_filled_pickups()
         self._unstick_balls()
         if self.combo_timer > 0:
@@ -328,8 +302,6 @@ class World:
         self._maybe_split(region)
         if self.claim_ratio() + 1e-6 >= self.quota:
             self._clear_sector()
-        elif not self.board.exposed(self.player_x, self.player_y):
-            self._respawn()
 
     def _clear_sector(self) -> None:
         if self.phase != "play":
@@ -341,21 +313,15 @@ class World:
         self.score += bonus
         self._check_life()
         self.phase = "cleared"
-        self.drawing = False
+        self.building = False
         self.events.append(("cleared", bonus))
 
     def _hurt(self, cause: str) -> None:
         if self.invuln > 0 or self.phase != "play":
             return
-        origin = self.draw_origin
         if self.god:
             self._abort_line()
-            if origin and self.board.exposed(*origin):
-                self.player_x, self.player_y = origin
-                self.from_x, self.from_y = origin
-            else:
-                self._respawn()
-            self.invuln = 0.7
+            self.invuln = 0.75
             self.events.append(("dodge", cause))
             return
         if self.shield:
@@ -371,60 +337,91 @@ class World:
         if self.lives <= 0:
             self.phase = "dead"
             return
-        self.invuln = 1.55
+        self.invuln = 1.5
         self._respawn()
 
     def _abort_line(self) -> None:
         for x, y in self.trail:
-            self.board.set_cell(x, y, 0)
+            if self.board.in_bounds(x, y) and self.board.grid[y][x] == TRAIL:
+                self.board.set_cell(x, y, EMPTY)
         self.trail.clear()
-        self.drawing = False
-        self.draw_origin = None
+        self.arms.clear()
+        self.building = False
+        self.build_acc = 0.0
 
     def _respawn(self) -> None:
         best = None
         best_score = -1.0
         for y in range(self.board.rows):
             for x in range(self.board.cols):
-                if not self.board.exposed(x, y):
+                if self.board.grid[y][x] != EMPTY:
                     continue
                 clearance = self._clearance(x, y)
-                # Prefer a bit of distance from the last death, all else equal.
                 if clearance > best_score:
                     best_score = clearance
                     best = (x, y)
         if best:
-            self.player_x, self.player_y = best
-        self.from_x = self.player_x
-        self.from_y = self.player_y
-        self.move_acc = 0.0
+            self.px, self.py = self.board.cell_center(*best)
 
     def _clearance(self, x: int, y: int) -> float:
         px, py = self.board.cell_center(x, y)
         best = 9999.0
         for ball in self.balls:
             best = min(best, math.hypot(ball.x - px, ball.y - py))
-        for bosco in self.boscos:
-            bx, by = self.board.cell_center(bosco.x, bosco.y)
-            best = min(best, math.hypot(bx - px, by - py))
         return best
 
-    def _trail_hit(self) -> bool:
-        if not self.drawing:
+    def _threatened(self) -> bool:
+        if self.invuln > 0:
             return False
         for ball in self.balls:
             if ball.phased:
                 continue
-            cx, cy = self.board.cell_at(ball.x, ball.y)
-            for y in range(cy - 2, cy + 3):
-                for x in range(cx - 2, cx + 3):
-                    if not self.board.in_bounds(x, y):
-                        continue
-                    if self.board.grid[y][x] != TRAIL:
-                        continue
-                    if self.board.circle_hits_cell(ball.x, ball.y, ball.radius, x, y):
-                        return True
+            reach = ball.radius + BLASTER_HIT
+            if math.hypot(ball.x - self.px, ball.y - self.py) < reach:
+                return True
+            if not self.building:
+                continue
+            for cell in self.trail:
+                if self.board.circle_hits_cell(ball.x, ball.y, ball.radius + 0.5, cell[0], cell[1]):
+                    return True
         return False
+
+    def _move_blaster(self, dt: float) -> None:
+        if self.pointer is not None:
+            self._travel(self.pointer[0], self.pointer[1])
+            return
+        dx, dy = self.move
+        if dx == 0 and dy == 0:
+            return
+        speed = BLASTER_SPEED * (1.2 if self.haste > 0 else 1.0)
+        self._travel(self.px + dx * speed * dt, self.py + dy * speed * dt)
+
+    def _travel(self, tx: float, ty: float) -> None:
+        dx = tx - self.px
+        dy = ty - self.py
+        dist = math.hypot(dx, dy)
+        if dist < 0.35:
+            return
+        steps = max(1, int(dist / 3.0) + 1)
+        sx = dx / steps
+        sy = dy / steps
+        for _ in range(steps):
+            self._nudge(sx, sy)
+
+    def _nudge(self, dx: float, dy: float) -> None:
+        if not self._center_blocked(self.px + dx, self.py):
+            self.px += dx
+        if not self._center_blocked(self.px, self.py + dy):
+            self.py += dy
+        margin = 3.0
+        self.px = min(max(self.px, margin), self.board.pixel_w - margin)
+        self.py = min(max(self.py, margin), self.board.pixel_h - margin)
+
+    def _center_blocked(self, x: float, y: float) -> bool:
+        cx, cy = self.board.cell_at(x, y)
+        if not self.board.in_bounds(cx, cy):
+            return True
+        return self.board.grid[cy][cx] != EMPTY
 
     def _blocker_cells(self) -> set[tuple[int, int]]:
         blocked: set[tuple[int, int]] = set()
@@ -436,9 +433,7 @@ class World:
             maxy = int((ball.y + reach) // CELL)
             for y in range(miny, maxy + 1):
                 for x in range(minx, maxx + 1):
-                    if not self.board.in_bounds(x, y):
-                        continue
-                    if self.board.grid[y][x] != 0:
+                    if not self.board.in_bounds(x, y) or self.board.grid[y][x] != EMPTY:
                         continue
                     if self.board.circle_hits_cell(ball.x, ball.y, ball.radius, x, y):
                         blocked.add((x, y))
@@ -462,29 +457,36 @@ class World:
         for _ in range(spec.phantoms):
             self._spawn_ball("phantom")
         for _ in range(spec.boscos):
-            self._spawn_bosco()
+            self._spawn_ball("bosco")
 
     def _spawn_ball(self, kind: str) -> None:
-        player_px, player_py = self.board.cell_center(self.player_x, self.player_y)
         for _ in range(70):
             x = self.rng.randrange(self.board.border + 3, self.board.cols - self.board.border - 3)
             y = self.rng.randrange(self.board.border + 3, self.board.rows - self.board.border - 3)
-            if self.board.grid[y][x] != 0:
+            if self.board.grid[y][x] != EMPTY:
                 continue
             px, py = self.board.cell_center(x, y)
-            if math.hypot(px - player_px, py - player_py) < 90:
+            if math.hypot(px - self.px, py - self.py) < 110:
                 continue
             if any(math.hypot(px - other.x, py - other.y) < 46 for other in self.balls):
                 continue
             speed = BALL_SPEED * self.speed_mult * self.rng.uniform(0.92, 1.08)
             if kind == "seeker":
-                speed *= 1.12
+                speed *= 1.08
             elif kind == "phantom":
                 speed *= 1.05
             elif kind == "splitter":
                 speed *= 0.94
+            elif kind == "bosco":
+                speed *= 1.12
             angle = self.rng.random() * math.tau
-            visual = {"ball": 16.0, "seeker": 18.0, "splitter": 20.0, "phantom": 17.0}[kind]
+            visual = {
+                "ball": 16.0,
+                "seeker": 18.0,
+                "splitter": 20.0,
+                "phantom": 17.0,
+                "bosco": 20.0,
+            }[kind]
             self.balls.append(
                 Ball(
                     x=px,
@@ -500,34 +502,30 @@ class World:
             )
             return
 
-    def _spawn_bosco(self) -> None:
-        far = []
-        near = []
-        for y in range(self.board.rows):
-            for x in range(self.board.cols):
-                if not self.board.exposed(x, y):
-                    continue
-                dist = abs(x - self.player_x) + abs(y - self.player_y)
-                if dist > 24:
-                    far.append((x, y))
-                elif dist > 4:
-                    near.append((x, y))
-        pool = far or near
-        if not pool:
-            return
-        x, y = self.rng.choice(pool)
-        self.boscos.append(Bosco(x=x, y=y, acc=self.rng.random() * 0.2))
+    def _chase_target(self, ball: Ball) -> tuple[float, float] | None:
+        if ball.kind == "bosco":
+            return self.px, self.py
+        if ball.kind != "seeker":
+            return None
+        if self.building and self.trail:
+            best = (self.px, self.py)
+            best_d = 1e18
+            for cell in self.trail:
+                cx, cy = self.board.cell_center(*cell)
+                dist = (cx - ball.x) ** 2 + (cy - ball.y) ** 2
+                if dist < best_d:
+                    best_d = dist
+                    best = (cx, cy)
+            return best
+        return self.px, self.py
 
-    def _steer_seeker(self, ball: Ball, dt: float) -> None:
-        if dt <= 0 or not self.drawing or not self.trail:
-            return
-        tx, ty = self.board.cell_center(*self.trail[-1])
-        dx = tx - ball.x
-        dy = ty - ball.y
+    def _steer(self, ball: Ball, dt: float, target: tuple[float, float], turn: float) -> None:
+        dx = target[0] - ball.x
+        dy = target[1] - ball.y
         mag = math.hypot(dx, dy) or 1.0
         want_x = dx / mag * ball.speed
         want_y = dy / mag * ball.speed
-        rate = min(1.0, dt * 1.7)
+        rate = min(1.0, dt * turn)
         ball.vx += (want_x - ball.vx) * rate
         ball.vy += (want_y - ball.vy) * rate
 
@@ -612,14 +610,14 @@ class World:
         for y in range(self.board.rows):
             row = self.board.grid[y]
             for x in range(self.board.cols):
-                if row[x] != 0:
+                if row[x] != EMPTY:
                     continue
                 px, py = self.board.cell_center(x, y)
                 if self.board.circle_hits_solid(px, py, ball.radius):
                     continue
-                d = (px - ball.x) ** 2 + (py - ball.y) ** 2
-                if d < best_d:
-                    best_d = d
+                dist = (px - ball.x) ** 2 + (py - ball.y) ** 2
+                if dist < best_d:
+                    best_d = dist
                     best = (px, py)
         if best:
             ball.x, ball.y = best
@@ -647,92 +645,6 @@ class World:
                 a.y -= uy * push
                 b.x += ux * push
                 b.y += uy * push
-
-    def _move_boscos(self, dt: float) -> None:
-        if dt <= 0:
-            return
-        interval = 1.0 / (BOSCO_RATE * self.speed_mult)
-        for bosco in self.boscos:
-            bosco.acc += dt
-            steps = 0
-            while bosco.acc >= interval and steps < 3:
-                bosco.acc -= interval
-                steps += 1
-                self._step_bosco(bosco)
-                if self.phase != "play":
-                    return
-
-    def _bosco_walkable(self, x: int, y: int) -> bool:
-        if not self.board.in_bounds(x, y):
-            return False
-        cell = self.board.grid[y][x]
-        if cell == TRAIL:
-            return True
-        return cell == 1 and self.board.exposed(x, y)
-
-    def _step_bosco(self, bosco: Bosco) -> None:
-        if not self._bosco_walkable(bosco.x, bosco.y):
-            self._relocate_bosco(bosco)
-            return
-        start = (bosco.x, bosco.y)
-        goal = (self.player_x, self.player_y)
-        if start == goal:
-            self._hurt("bosco")
-            return
-        nxt = self._bosco_next(start, goal)
-        if nxt is None or nxt == start:
-            return
-        bosco.facing = (nxt[0] - start[0], nxt[1] - start[1])
-        bosco.x, bosco.y = nxt
-        if (bosco.x, bosco.y) == (self.player_x, self.player_y):
-            self._hurt("bosco")
-
-    def _bosco_next(self, start: tuple[int, int], goal: tuple[int, int]) -> tuple[int, int] | None:
-        if not self._bosco_walkable(*goal):
-            goal = self._nearest_walkable(goal) or start
-        queue = deque([start])
-        prev = {start: None}
-        found = None
-        while queue:
-            cur = queue.popleft()
-            if cur == goal:
-                found = cur
-                break
-            for dx, dy in DIRS:
-                nxt = (cur[0] + dx, cur[1] + dy)
-                if nxt not in prev and self._bosco_walkable(*nxt):
-                    prev[nxt] = cur
-                    queue.append(nxt)
-        if found is None:
-            options = []
-            for dx, dy in DIRS:
-                nxt = (start[0] + dx, start[1] + dy)
-                if self._bosco_walkable(*nxt):
-                    options.append(nxt)
-            return self.rng.choice(options) if options else start
-        cur = found
-        while prev[cur] is not None and prev[cur] != start:
-            cur = prev[cur]
-        return cur
-
-    def _nearest_walkable(self, goal: tuple[int, int]) -> tuple[int, int] | None:
-        best = None
-        best_d = 1e9
-        gx, gy = goal
-        for y in range(self.board.rows):
-            for x in range(self.board.cols):
-                if not self._bosco_walkable(x, y):
-                    continue
-                d = abs(x - gx) + abs(y - gy)
-                if d < best_d:
-                    best_d = d
-                    best = (x, y)
-        return best
-
-    def _relocate_bosco(self, bosco: Bosco) -> None:
-        spot = self._nearest_walkable((bosco.x, bosco.y))
-        if spot:
-            bosco.x, bosco.y = spot
 
     def _maybe_split(self, region_cells: int) -> None:
         if region_cells < int(self.board.cols * self.board.rows * 0.045):
@@ -766,7 +678,7 @@ class World:
             vy=math.sin(child_angle) * speed,
             speed=speed,
             kind="splitter",
-            visual=max(7.0, ball.visual - 2.5),
+            visual=max(8.0, ball.visual - 2.5),
             generation=ball.generation + 1,
             can_split=ball.generation + 1 < 2,
         )
@@ -780,10 +692,12 @@ class World:
         alive = []
         for pickup in self.pickups:
             pickup.life -= dt
-            if pickup.life > 0 and self.board.grid[pickup.y][pickup.x] != 1:
-                alive.append(pickup)
-            elif pickup.life > 0 and self.board.grid[pickup.y][pickup.x] == 1:
+            if pickup.life <= 0:
+                continue
+            if self.board.grid[pickup.y][pickup.x] == 1:
                 self._apply_power(pickup.kind)
+            else:
+                alive.append(pickup)
         self.pickups = alive
         self.pickup_timer -= dt
         if self.pickup_timer <= 0:
@@ -793,19 +707,23 @@ class World:
 
     def _spawn_pickup(self) -> None:
         kind = self.rng.choice(("shield", "haste", "freeze", "slow", "mult"))
-        player_px, player_py = self.board.cell_center(self.player_x, self.player_y)
         for _ in range(40):
             x = self.rng.randrange(self.board.border + 2, self.board.cols - self.board.border - 2)
             y = self.rng.randrange(self.board.border + 2, self.board.rows - self.board.border - 2)
-            if self.board.grid[y][x] != 0:
+            if self.board.grid[y][x] != EMPTY:
                 continue
             px, py = self.board.cell_center(x, y)
-            if math.hypot(px - player_px, py - player_py) < 70:
+            if math.hypot(px - self.px, py - self.py) < 70:
                 continue
-            if any(math.hypot(px - b.x, py - b.y) < 36 for b in self.balls):
+            if any(math.hypot(px - ball.x, py - ball.y) < 36 for ball in self.balls):
                 continue
             self.pickups.append(Pickup(x=x, y=y, kind=kind))
             return
+
+    def _collect_blaster(self) -> None:
+        cx, cy = self.board.cell_at(self.px, self.py)
+        if self.board.in_bounds(cx, cy):
+            self._collect_at(cx, cy)
 
     def _collect_at(self, x: int, y: int) -> None:
         kept = []

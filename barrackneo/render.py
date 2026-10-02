@@ -99,7 +99,6 @@ class Renderer:
         self._trail(world)
         self._pickups(world)
         self._balls(world)
-        self._boscos(world)
         self._player(world)
         screen.blit(self.vignette, (ox, oy))
         self._particles(particles)
@@ -201,8 +200,8 @@ class Renderer:
         def half(px: float, py: float) -> tuple[int, int]:
             return int(px / 2), int(py / 2)
 
-        if world.drawing and world.trail:
-            hot = world.nearest_threat() < 52
+        if world.building and world.trail:
+            hot = world.nearest_threat() < 64
             color = (255, 70, 90) if hot else _mix(self.accent, (255, 255, 255), 0.35)
             for x, y in world.trail:
                 pygame.draw.circle(glow, color, half((x + 0.5) * CELL, (y + 0.5) * CELL), 5)
@@ -211,26 +210,33 @@ class Renderer:
             if ball.phased:
                 color = _mix(color, (255, 255, 255), 0.45)
             pygame.draw.circle(glow, color, half(ball.x, ball.y), int(ball.visual / 1.4))
-        cx, cy = world.render_cell()
-        pygame.draw.circle(glow, (255, 255, 255), half((cx + 0.5) * CELL, (cy + 0.5) * CELL), 6)
+        cx, cy = world.render_pixel()
+        pygame.draw.circle(glow, (255, 255, 255), half(cx, cy), 6)
         blurred = pygame.transform.smoothscale(glow, (FIELD_W, FIELD_H))
         self.screen.blit(blurred, self.origin(), special_flags=pygame.BLEND_ADD)
 
     def _trail(self, world) -> None:
-        if not world.drawing or not world.trail:
+        if world.building and world.trail:
+            cells = world.ordered_trail()
+            points = [self._grid(x, y) for x, y in cells]
+            hot = world.nearest_threat() < 64
+            outer = (255, 70, 88) if hot else self.accent
+            for point in points:
+                pygame.draw.circle(self.screen, outer, point, 7)
+            if len(points) >= 2:
+                pygame.draw.lines(self.screen, outer, False, points, 10)
+                pygame.draw.lines(self.screen, (255, 255, 255), False, points, 3)
             return
-        points = [self._grid(x, y) for x, y in world.trail]
-        head = self._grid(*world.render_cell())
-        if points[-1] != head:
-            points.append(head)
-        hot = world.nearest_threat() < 56
-        outer = (255, 70, 88) if hot else self.accent
-        for point in points:
-            pygame.draw.circle(self.screen, outer, point, 7)
-        if len(points) >= 2:
-            pygame.draw.lines(self.screen, outer, False, points, 10)
-            pygame.draw.lines(self.screen, (255, 255, 255), False, points, 3)
-        pygame.draw.circle(self.screen, (255, 255, 255), points[-1], 5)
+        aim = world.aim_cells()
+        if len(aim) < 2:
+            return
+        if world.horizontal:
+            aim.sort(key=lambda cell: cell[0])
+        else:
+            aim.sort(key=lambda cell: cell[1])
+        points = [self._grid(x, y) for x, y in aim]
+        guide = _mix(self.accent, (255, 255, 255), 0.25)
+        pygame.draw.lines(self.screen, guide, False, points, 2)
 
     def _pickups(self, world) -> None:
         for pickup in world.pickups:
@@ -255,8 +261,11 @@ class Renderer:
             self.screen.blit(text, text.get_rect(center=(sx, sy + 16)))
 
     def _balls(self, world) -> None:
-        px, py = self._grid(*world.render_cell())
+        px, py = self._pix(*world.render_pixel())
         for ball in world.balls:
+            if ball.kind == "bosco":
+                self._shark(ball)
+                continue
             color = _ball_color(ball.kind, self.accent)
             sx, sy = self._pix(ball.x, ball.y)
             halo = max(8, int(ball.visual))
@@ -286,40 +295,41 @@ class Renderer:
             elif ball.kind == "splitter":
                 pygame.draw.circle(self.screen, (236, 255, 190), (sx, sy), core + 2, 2)
 
-    def _boscos(self, world) -> None:
-        for bosco in world.boscos:
-            sx, sy = self._grid(bosco.x, bosco.y)
-            ang = math.atan2(bosco.facing[1], bosco.facing[0])
-            body = [(24, 0), (-16, 12), (-9, 0), (-16, -12)]
-            points = [self._spin(sx, sy, x, y, ang) for x, y in body]
-            pygame.draw.polygon(self.screen, (255, 92, 48), points)
-            pygame.draw.polygon(self.screen, (255, 214, 170), points, 1)
-            ex, ey = self._spin(sx, sy, 6, 0, ang)
-            pygame.draw.circle(self.screen, (255, 244, 220), (ex, ey), 2)
+    def _shark(self, ball) -> None:
+        sx, sy = self._pix(ball.x, ball.y)
+        ang = math.atan2(ball.vy, ball.vx)
+        body = [(22, 0), (-16, 11), (-9, 0), (-16, -11)]
+        points = [self._spin(sx, sy, x, y, ang) for x, y in body]
+        pygame.draw.polygon(self.screen, (255, 92, 48), points)
+        pygame.draw.polygon(self.screen, (255, 214, 170), points, 1)
+        ex, ey = self._spin(sx, sy, 8, 0, ang)
+        pygame.draw.circle(self.screen, (255, 244, 220), (ex, ey), 2)
 
     def _player(self, world) -> None:
-        cx, cy = world.render_cell()
-        sx, sy = self._grid(cx, cy)
+        sx, sy = self._pix(*world.render_pixel())
         if self.after:
             last = self.after[-1]
-            if math.hypot(sx - last[0], sy - last[1]) > 48:
+            if math.hypot(sx - last[0], sy - last[1]) > 80:
                 self.after.clear()
         self.after.append((sx, sy))
-        if len(self.after) > 7:
+        if len(self.after) > 6:
             self.after.pop(0)
         blinking = world.invuln > 0 and int(self.time * 18) % 2 == 0
         for i, (ax, ay) in enumerate(self.after[:-1]):
             fade = (i + 1) / len(self.after)
-            pygame.draw.circle(self.screen, _mix((0, 0, 0), self.accent, fade * 0.8), (int(ax), int(ay)), 3)
+            pygame.draw.circle(self.screen, _mix((0, 0, 0), self.accent, fade * 0.7), (int(ax), int(ay)), 3)
         if blinking:
             return
-        ang = math.atan2(world.facing[1], world.facing[0])
-        shape = [(16, 0), (-11, 9), (-5, 0), (-11, -9)]
+        ang = 0.0 if world.horizontal else math.pi / 2
+        # A bar with a muzzle pointing both ways.
+        shape = [(20, 0), (7, 5), (7, 3), (-7, 3), (-7, 5), (-20, 0), (-7, -5), (-7, -3), (7, -3), (7, -5)]
         points = [self._spin(sx, sy, x, y, ang) for x, y in shape]
-        pygame.draw.polygon(self.screen, (255, 255, 255), points)
-        pygame.draw.polygon(self.screen, self.accent, points, 1)
+        fill = (255, 255, 255) if not world.building else (255, 244, 210)
+        pygame.draw.polygon(self.screen, fill, points)
+        pygame.draw.polygon(self.screen, self.accent if not world.building else (255, 90, 90), points, 2)
+        pygame.draw.circle(self.screen, self.accent, (int(sx), int(sy)), 3)
         if world.shield:
-            pulse = 12 + int(2 * math.sin(self.time * 9))
+            pulse = 16 + int(2 * math.sin(self.time * 9))
             pygame.draw.circle(self.screen, (120, 235, 255), (int(sx), int(sy)), pulse, 2)
 
     def _particles(self, particles) -> None:
@@ -390,12 +400,12 @@ class Renderer:
         y = 36
         y = self._label(x, y, "HOW TO PLAY", self.accent)
         rules = [
-            "Ride the rim, then dive into open field.",
-            "A ball touching your line ends the run.",
-            "Reconnect. Empty pockets fill. Occupied ones stay.",
-            "Clear the quota to take the sector.",
-            "Backtrack to erase a line you don't like.",
-            "Gems on the field are power-ups. Draw through them.",
+            "Move the blaster through open field.",
+            "Fire to shoot a wall out both ends.",
+            "It grows until it hits the border or a line.",
+            "Empty pockets fill. Occupied ones stay.",
+            "A ball on you, or on a growing line, costs a life.",
+            "Gems speed the line or slow the swarm.",
         ]
         for rule in rules:
             for line in _wrap(self.small, rule, PANEL_W - 24):
@@ -403,7 +413,7 @@ class Renderer:
             y += 6
         y += 8
         y = self._label(x, y, "CONTROLS", self.accent)
-        for line in ("Arrows or WASD to move", "Hold left mouse to steer", "Esc pauses", "Enter starts"):
+        for line in ("Mouse or arrows to move", "Click or Space to fire", "Right click or Q to rotate", "Esc pauses"):
             y = self._text(x, y, line, (206, 214, 230), self.small)
         credit = self.tiny.render("Inspired by Barrack, Ambrosia 1996", True, (120, 132, 156))
         self.screen.blit(credit, (x, WIN_H - 48))
@@ -445,8 +455,8 @@ class Renderer:
         for line in _wrap(self.small, world.spec.hint, PANEL_W - 28):
             y = self._text(x, y, line, (168, 180, 204), self.small)
         foot = WIN_H - 78
-        self._text(x, foot, "Arrows / WASD / hold mouse", (130, 142, 166), self.tiny)
-        extra = "Esc pause    R restart" if state == "pause" else "Esc pause"
+        self._text(x, foot, "Mouse or arrows    Click / Space fires", (130, 142, 166), self.tiny)
+        extra = "Right click rotates    R restarts" if state == "pause" else "Right click or Q rotates"
         self._text(x, foot + 18, extra, (130, 142, 166), self.tiny)
 
     def _effects(self, x: int, y: int, world) -> int:
@@ -454,7 +464,7 @@ class Renderer:
         if world.shield:
             active.append(("SHIELD", PICKUPS["shield"][1], None))
         if world.haste > 0:
-            active.append(("HASTE", PICKUPS["haste"][1], world.haste))
+            active.append(("LINE", PICKUPS["haste"][1], world.haste))
         if world.freeze > 0:
             active.append(("FREEZE", PICKUPS["freeze"][1], world.freeze))
         if world.slow > 0:

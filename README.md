@@ -1,8 +1,8 @@
 # BarrackNeo
 
-A modern take on the 1996 Ambrosia game Barrack by Greg Lovette. You ride the rim of a dark sector, dive in, and draw a line through a swarm of balls. When the line reconnects, every pocket with no enemy in it fills in. Fill the quota and the sector is yours.
+A modern take on the 1996 Ambrosia game Barrack by Greg Lovette. You fly a blaster through an open sector. Fire, and a wall shoots out both ends in a straight line. It grows until each end hits the border or a wall you already built, then every pocket with no enemy in it fills in. Fill the quota and the sector is yours.
 
-Bosco patrols the rim and will run down your line. Eyes chase the cut. Splitters divide after a big claim. Phantoms ghost through walls, then turn solid again. Gems in the open are power-ups: draw through one, or fill the pocket it sits in.
+Balls, eyes, and Bosco hunt the blaster and the line while it is still growing. A touch costs a life and the unfinished wall comes down. Splitters divide after a big claim. Phantoms ghost through walls, then turn solid again. Gems in the open slow the swarm, speed the line while it builds, or shield the blaster.
 
 This is an independent homage. It is not made by or affiliated with Ambrosia Software.
 
@@ -19,14 +19,14 @@ Python 3.11 or newer. The window is local. No account and no network once pygame
 
 | Action | Keys |
 | --- | --- |
-| Move and draw | Arrow keys or WASD |
-| Steer | Hold the left mouse button |
-| Erase the line | Backtrack along it |
+| Move | Mouse, arrow keys, or WASD |
+| Fire both ways | Left click or Space |
+| Rotate 90 degrees | Right click, mouse wheel, Q, or F |
 | Pause | Esc |
 | Restart the sector | R, while paused |
-| Start, continue, confirm | Enter |
+| Start, continue, confirm | Enter or Space |
 
-You are safe on the rim. You are not safe on the line.
+You can sit anywhere in the open. A ball that hits the blaster, or the line while it is still building, costs a life.
 
 ## Checks
 

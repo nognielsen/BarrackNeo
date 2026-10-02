@@ -18,11 +18,12 @@ PANEL_X = FIELD_X + FIELD_W + MARGIN
 WIN_W = PANEL_X + PANEL_W + MARGIN
 WIN_H = FIELD_Y + FIELD_H + MARGIN
 
-PLAYER_RATE = 18.0
-HASTE_MULT = 1.5
+BLASTER_SPEED = 340.0
+BLASTER_HIT = 9.0
+BUILD_RATE = 34.0
+HASTE_BUILD = 1.9
 BALL_SPEED = 132.0
 BALL_RADIUS = 6.0
-BOSCO_RATE = 10.5
 MAX_LIVES = 6
 START_LIVES = 3
 EXTRA_LIFE_SCORE = 40000
@@ -30,7 +31,6 @@ COMBO_WINDOW = 3.4
 MAX_COMBO = 9
 PICKUP_LIFE = 13.0
 MAX_BALLS = 12
-MAX_STEPS_PER_FRAME = 4
 
 EMPTY_RGB = (0, 0, 0)
 FIELD_BG = (7, 10, 18)
@@ -52,14 +52,14 @@ class LevelSpec:
 
 
 _LEVELS = (
-    LevelSpec(0.58, 1, 0, 0, 0, 0, 1.00, "Warm-up", "Dive off the rim. Cut back to a wall to claim empty ground."),
-    LevelSpec(0.65, 2, 0, 0, 1, 0, 1.05, "Bosco", "Bosco runs the rim and will follow your line. Keep the cut short."),
-    LevelSpec(0.70, 2, 1, 0, 1, 0, 1.10, "The Eye", "The eye chases the line while you draw. Juke, then close."),
-    LevelSpec(0.74, 3, 1, 0, 1, 0, 1.15, "Crowded", "Three balls. Claim the side they are not on."),
+    LevelSpec(0.58, 1, 0, 0, 0, 0, 1.00, "Warm-up", "Fire a straight cut. It grows both ways until it hits a wall."),
+    LevelSpec(0.65, 2, 0, 0, 1, 0, 1.05, "Bosco", "Bosco hunts the blaster. Finish the line before he reaches it."),
+    LevelSpec(0.70, 2, 1, 0, 1, 0, 1.10, "The Eye", "The eye chases the line while it is still building."),
+    LevelSpec(0.74, 3, 1, 0, 1, 0, 1.15, "Crowded", "Three balls. Cut off the side they are not on."),
     LevelSpec(0.76, 2, 1, 1, 1, 0, 1.18, "Splitter", "A big claim makes the green ball divide. Fence it in early."),
-    LevelSpec(0.78, 3, 1, 1, 2, 0, 1.24, "Crossfire", "Two Boscos. Don't linger on the rim after a cut."),
+    LevelSpec(0.78, 3, 1, 1, 2, 0, 1.24, "Crossfire", "Two sharks. Short cuts are safer than long ones."),
     LevelSpec(0.80, 3, 2, 1, 2, 1, 1.30, "Phase", "Phantoms ghost through walls. They kill only while solid."),
-    LevelSpec(0.82, 4, 2, 1, 2, 1, 1.36, "Red Hour", "The quota is high. Chain claims before the swarm settles."),
+    LevelSpec(0.82, 4, 2, 1, 2, 1, 1.36, "Red Hour", "The quota is high. Haste gems finish a line sooner."),
 )
 
 
@@ -110,9 +110,9 @@ def accent_for(level: int) -> tuple[int, int, int]:
 
 PICKUPS = {
     "shield": ("SHIELD", (90, 230, 255), "Absorb the next hit."),
-    "haste": ("HASTE", (255, 220, 70), "Move faster for a few seconds."),
+    "haste": ("LINE", (255, 220, 70), "The line builds much faster."),
     "freeze": ("FREEZE", (150, 210, 255), "Stop the swarm cold."),
-    "slow": ("SLOW", (200, 160, 255), "Drag every enemy down."),
+    "slow": ("SLOW", (200, 160, 255), "Slow every enemy down."),
     "mult": ("x2", (255, 170, 80), "Double points on the next claims."),
 }
 
