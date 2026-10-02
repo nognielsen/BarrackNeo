@@ -105,14 +105,22 @@ def test_shield_spends_instead_of_a_life() -> None:
     assert world.phase == "play"
 
 
-def test_ball_on_the_blaster_costs_a_life() -> None:
+def test_ball_on_the_blaster_does_not_cost_a_life() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
     _quiet(world)
     world.balls.append(Ball(x=world.px, y=world.py, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
     world.update(0.05)
-    assert world.lives == 2
+    assert world.lives == 3
     assert world.phase == "play"
     assert not world.building
+    world.want_rotate = True
+    world.update(0.05)
+    world.balls[0].x = world.px + 14
+    world.want_fire = True
+    _until_idle(world)
+    assert world.lives == 3
+    assert not world.building
+    assert world.phase == "play"
 
 
 def test_enemy_side_stays_open() -> None:
@@ -264,7 +272,7 @@ def main() -> None:
         test_full_cut_clears_an_empty_sector,
         test_ball_on_the_line_kills_instead_of_claiming,
         test_shield_spends_instead_of_a_life,
-        test_ball_on_the_blaster_costs_a_life,
+        test_ball_on_the_blaster_does_not_cost_a_life,
         test_enemy_side_stays_open,
         test_line_stops_at_an_existing_wall,
         test_slow_cuts_enemy_motion,

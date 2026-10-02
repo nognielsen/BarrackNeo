@@ -3,8 +3,8 @@
 The blaster moves anywhere in the field. Fire sends a wall out both ends. The wall
 grows until each end hits the border or an existing line, then every pocket
 with no enemy in it fills. Filled ground does not block the blaster. A ball that
-touches the blaster, or the wall while it is still growing, costs a life and the
-unfinished wall comes back down.
+touches the wall while it is still growing costs a life and the unfinished wall
+comes back down. The blaster itself is safe to fly through the swarm.
 """
 
 import math
@@ -15,7 +15,6 @@ from barrackneo.board import EMPTY, TRAIL, Board
 from barrackneo.settings import (
     BALL_RADIUS,
     BALL_SPEED,
-    BLASTER_HIT,
     BLASTER_SPEED,
     BUILD_RATE,
     CELL,
@@ -389,15 +388,11 @@ class World:
         return best
 
     def _threatened(self) -> bool:
-        if self.invuln > 0:
+        """A life is lost only when a solid enemy overlaps the wall while it grows."""
+        if self.invuln > 0 or not self.building:
             return False
         for ball in self.balls:
             if ball.phased:
-                continue
-            reach = ball.radius + BLASTER_HIT
-            if math.hypot(ball.x - self.px, ball.y - self.py) < reach:
-                return True
-            if not self.building:
                 continue
             for cell in self.trail:
                 if self.board.circle_hits_cell(ball.x, ball.y, ball.radius + 0.5, cell[0], cell[1]):

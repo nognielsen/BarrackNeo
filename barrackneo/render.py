@@ -404,7 +404,8 @@ class Renderer:
             "Fire to shoot a wall out both ends.",
             "It grows until it hits the border or a line.",
             "Empty pockets fill. Occupied ones stay.",
-            "A ball on you, or on a growing line, costs a life.",
+            "Balls pass through the blaster.",
+            "A ball on a growing line costs a life.",
             "Gems speed the line or slow the swarm.",
         ]
         for rule in rules:
