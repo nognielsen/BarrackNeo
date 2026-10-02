@@ -184,26 +184,55 @@ def test_blaster_moves_and_can_fire_again() -> None:
     _until_idle(world)
     assert world.phase == "play"
     assert not world.building
-    landed = world.board.cell_at(world.px, world.py)
-    assert world.board.grid[landed[1]][landed[0]] == EMPTY
+    assert world.board.cell_at(world.px, world.py) == (cx, cy)
+    assert world.board.grid[cy + 2][cx] == FILLED
+    world.pointer = None
+    world.move = (0.0, 1.0)
+    for _ in range(8):
+        world.update(0.05)
+    nx, ny = world.board.cell_at(world.px, world.py)
+    assert ny > cy
+    assert world.board.grid[ny][nx] == FILLED
+    world.move = (0.0, -1.0)
+    landed = None
+    for _ in range(30):
+        world.update(0.05)
+        lx, ly = world.board.cell_at(world.px, world.py)
+        if ly < cy and world.board.grid[ly][lx] == EMPTY:
+            landed = (lx, ly)
+            break
+    world.move = (0.0, 0.0)
+    assert landed is not None
+    assert world.lives == 3
     world.want_fire = True
     world.update(0.05)
     assert world.building
-    assert world.lives == 3
 
 
-def test_blaster_can_leave_a_filled_cell() -> None:
+def test_fire_from_a_wall_still_cuts() -> None:
     world = World(level=1, populate=False, cols=24, rows=16)
     _quiet(world)
     cx, cy = world.board.cell_at(world.px, world.py)
     world.board.set_cell(cx, cy, FILLED)
-    world.pointer = None
-    world.move = (1.0, 0.0)
-    for _ in range(6):
-        world.update(0.05)
-    nx, ny = world.board.cell_at(world.px, world.py)
-    assert (nx, ny) != (cx, cy)
-    assert world.board.grid[ny][nx] == EMPTY
+    world.want_fire = True
+    world.update(0.05)
+    assert world.building
+    assert world.board.grid[cy][cx] == FILLED
+    assert world.board.grid[cy][cx + 1] == TRAIL
+
+
+def test_fire_inside_a_solid_box_does_not_claim() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    for y in range(cy - 2, cy + 3):
+        for x in range(cx - 2, cx + 3):
+            world.board.set_cell(x, y, FILLED)
+    before = world.claim_ratio()
+    world.want_fire = True
+    world.update(0.05)
+    assert not world.building
+    assert world.claim_ratio() == before
 
 
 def test_haste_builds_the_line_faster() -> None:
@@ -240,7 +269,8 @@ def main() -> None:
         test_line_stops_at_an_existing_wall,
         test_slow_cuts_enemy_motion,
         test_blaster_moves_and_can_fire_again,
-        test_blaster_can_leave_a_filled_cell,
+        test_fire_from_a_wall_still_cuts,
+        test_fire_inside_a_solid_box_does_not_claim,
         test_haste_builds_the_line_faster,
         test_cell_size_matches_centers,
     ]

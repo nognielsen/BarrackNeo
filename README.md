@@ -1,6 +1,6 @@
 # BarrackNeo
 
-A modern take on the 1996 Ambrosia game Barrack by Greg Lovette. You fly a blaster through an open sector. Fire, and a wall shoots out both ends in a straight line. It grows until each end hits the border or a wall you already built, then every pocket with no enemy in it fills in. Fill the quota and the sector is yours.
+A modern take on the 1996 Ambrosia game Barrack by Greg Lovette. You fly a blaster anywhere in the sector. Filled ground does not stop it. Fire, and a wall shoots out both ends in a straight line. It grows until each end hits the border or a wall you already built, then every pocket with no enemy in it fills in. Fill the quota and the sector is yours.
 
 Balls, eyes, and Bosco hunt the blaster and the line while it is still growing. A touch costs a life and the unfinished wall comes down. Splitters divide after a big claim. Phantoms ghost through walls, then turn solid again. Gems in the open slow the swarm, speed the line while it builds, or shield the blaster.
 

@@ -1,9 +1,10 @@
 """Simulation: the blaster, the swarm, and the score. No drawing in here.
 
-The blaster moves through open field. Fire sends a wall out both ends. The wall
+The blaster moves anywhere in the field. Fire sends a wall out both ends. The wall
 grows until each end hits the border or an existing line, then every pocket
-with no enemy in it fills. A ball that touches the blaster, or the wall while
-it is still growing, costs a life and the unfinished wall comes back down.
+with no enemy in it fills. Filled ground does not block the blaster. A ball that
+touches the blaster, or the wall while it is still growing, costs a life and the
+unfinished wall comes back down.
 """
 
 import math
@@ -124,9 +125,9 @@ class World:
         if self.building or self.phase != "play":
             return []
         cx, cy = self.board.cell_at(self.px, self.py)
-        if not self.board.in_bounds(cx, cy) or self.board.grid[cy][cx] != EMPTY:
+        if not self.board.in_bounds(cx, cy):
             return []
-        cells = [(cx, cy)]
+        cells = [(cx, cy)] if self.board.grid[cy][cx] == EMPTY else []
         for dx, dy in self._axes():
             x, y = cx, cy
             for _ in range(max(self.board.cols, self.board.rows)):
@@ -236,17 +237,29 @@ class World:
         if self.building or self.phase != "play" or self.invuln > 0:
             return
         cx, cy = self.board.cell_at(self.px, self.py)
-        if not self.board.in_bounds(cx, cy) or self.board.grid[cy][cx] != EMPTY:
+        if not self.board.in_bounds(cx, cy):
+            return
+        origin_open = self.board.grid[cy][cx] == EMPTY
+        if not origin_open and not self._shot_has_room(cx, cy):
             return
         self.building = True
-        self.trail = [(cx, cy)]
-        self.board.set_cell(cx, cy, TRAIL)
+        self.trail = []
+        if origin_open:
+            self.trail = [(cx, cy)]
+            self.board.set_cell(cx, cy, TRAIL)
+            self._collect_at(cx, cy)
         self.arms = []
         for dx, dy in self._axes():
             self.arms.append({"dx": dx, "dy": dy, "x": cx, "y": cy, "done": False})
         self.build_acc = 0.0
-        self._collect_at(cx, cy)
         self.events.append(("fire",))
+
+    def _shot_has_room(self, cx: int, cy: int) -> bool:
+        for dx, dy in self._axes():
+            nx, ny = cx + dx, cy + dy
+            if self.board.in_bounds(nx, ny) and self.board.grid[ny][nx] == EMPTY:
+                return True
+        return False
 
     def _grow(self, dt: float) -> None:
         rate = BUILD_RATE * (HASTE_BUILD if self.haste > 0 else 1.0)
@@ -271,6 +284,11 @@ class World:
                 self._hurt("line")
                 return
             if self.arms and all(arm["done"] for arm in self.arms):
+                if not self.trail:
+                    self.building = False
+                    self.arms.clear()
+                    self.build_acc = 0.0
+                    return
                 self._finish_line()
                 return
 
@@ -302,26 +320,6 @@ class World:
         self._maybe_split(region)
         if self.claim_ratio() + 1e-6 >= self.quota:
             self._clear_sector()
-        elif self.phase == "play":
-            self._escape_wall()
-
-    def _escape_wall(self) -> None:
-        """Step off a finished wall into the nearest open cell so the next shot can start."""
-        cx, cy = self.board.cell_at(self.px, self.py)
-        if self.board.in_bounds(cx, cy) and self.board.grid[cy][cx] == EMPTY:
-            return
-        best = None
-        best_score = -1.0
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nx, ny = cx + dx, cy + dy
-            if not self.board.in_bounds(nx, ny) or self.board.grid[ny][nx] != EMPTY:
-                continue
-            score = self._clearance(nx, ny)
-            if score > best_score:
-                best_score = score
-                best = (nx, ny)
-        if best:
-            self.px, self.py = self.board.cell_center(*best)
 
     def _clear_sector(self) -> None:
         if self.phase != "play":
@@ -445,14 +443,7 @@ class World:
 
     def _can_occupy(self, x: float, y: float) -> bool:
         cx, cy = self.board.cell_at(x, y)
-        if not self.board.in_bounds(cx, cy):
-            return False
-        if self.board.grid[cy][cx] == EMPTY:
-            return True
-        # A finished wall occupies the cell under the blaster. Allow sliding
-        # inside that cell so a later step can leave into open field.
-        ox, oy = self.board.cell_at(self.px, self.py)
-        return (cx, cy) == (ox, oy)
+        return self.board.in_bounds(cx, cy)
 
     def _blocker_cells(self) -> set[tuple[int, int]]:
         blocked: set[tuple[int, int]] = set()

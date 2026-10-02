@@ -400,7 +400,7 @@ class Renderer:
         y = 36
         y = self._label(x, y, "HOW TO PLAY", self.accent)
         rules = [
-            "Move the blaster through open field.",
+            "Move the blaster anywhere. Walls do not block it.",
             "Fire to shoot a wall out both ends.",
             "It grows until it hits the border or a line.",
             "Empty pockets fill. Occupied ones stay.",
