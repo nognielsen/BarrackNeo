@@ -19,7 +19,7 @@ Python 3.11 or newer. The window is local. No account and no network once pygame
 
 | Action | Keys |
 | --- | --- |
-| Move | Mouse, arrow keys, or WASD |
+| Move | WASD, arrow keys, or moving the mouse |
 | Fire both ways | Left click or Space |
 | Rotate 90 degrees | Right click, mouse wheel, Q, or F |
 | Pause | Esc |

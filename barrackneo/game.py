@@ -96,6 +96,7 @@ class Game:
         self.banner = 0.0
         self.time = 0.0
         self.last_dir = None
+        self.mouse_aim: tuple[float, float] | None = None
         self.demo_dir = (1.0, 0.0)
         self.demo_hold = 0.0
         self.autoplay = False
@@ -130,6 +131,7 @@ class Game:
             world.next_life = carry.next_life
         self.world = world
         self.state = "play"
+        self.mouse_aim = None
         self.banner = 1.7
         self.shake = 0.0
         self.floaters.clear()
@@ -144,6 +146,7 @@ class Game:
         world.next_life = next_life
         self.world = world
         self.state = "play"
+        self.mouse_aim = None
         self.banner = 1.2
         self.floaters.clear()
         self.particles.clear()
@@ -160,6 +163,8 @@ class Game:
                     self.last_dir = None
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 self._mouse_down(event.button)
+            elif event.type == pygame.MOUSEMOTION and self.state == "play":
+                self._note_mouse(event.pos)
             elif event.type == pygame.MOUSEWHEEL and self.state == "play":
                 self._request_rotate()
 
@@ -280,17 +285,18 @@ class Game:
     def _steer(self, world: World) -> None:
         direction = self._keys_dir()
         if direction != (0, 0):
-            world.move = direction
+            world.move = (float(direction[0]), float(direction[1]))
             world.pointer = None
+            self.mouse_aim = None
             return
         world.move = (0.0, 0.0)
-        world.pointer = self._mouse_pointer()
+        world.pointer = self.mouse_aim
+        self.mouse_aim = None
 
-    def _mouse_pointer(self) -> tuple[float, float] | None:
-        mx, my = pygame.mouse.get_pos()
+    def _note_mouse(self, pos: tuple[int, int]) -> None:
+        mx, my = pos
         if FIELD_X <= mx < FIELD_X + FIELD_W and FIELD_Y <= my < FIELD_Y + FIELD_H:
-            return (mx - FIELD_X, my - FIELD_Y)
-        return None
+            self.mouse_aim = (float(mx - FIELD_X), float(my - FIELD_Y))
 
     def _keys_dir(self):
         keys = pygame.key.get_pressed()

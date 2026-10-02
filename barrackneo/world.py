@@ -302,6 +302,26 @@ class World:
         self._maybe_split(region)
         if self.claim_ratio() + 1e-6 >= self.quota:
             self._clear_sector()
+        elif self.phase == "play":
+            self._escape_wall()
+
+    def _escape_wall(self) -> None:
+        """Step off a finished wall into the nearest open cell so the next shot can start."""
+        cx, cy = self.board.cell_at(self.px, self.py)
+        if self.board.in_bounds(cx, cy) and self.board.grid[cy][cx] == EMPTY:
+            return
+        best = None
+        best_score = -1.0
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = cx + dx, cy + dy
+            if not self.board.in_bounds(nx, ny) or self.board.grid[ny][nx] != EMPTY:
+                continue
+            score = self._clearance(nx, ny)
+            if score > best_score:
+                best_score = score
+                best = (nx, ny)
+        if best:
+            self.px, self.py = self.board.cell_center(*best)
 
     def _clear_sector(self) -> None:
         if self.phase != "play":
@@ -409,19 +429,30 @@ class World:
             self._nudge(sx, sy)
 
     def _nudge(self, dx: float, dy: float) -> None:
-        if not self._center_blocked(self.px + dx, self.py):
-            self.px += dx
-        if not self._center_blocked(self.px, self.py + dy):
-            self.py += dy
+        self._slide(dx, 0.0)
+        self._slide(0.0, dy)
         margin = 3.0
         self.px = min(max(self.px, margin), self.board.pixel_w - margin)
         self.py = min(max(self.py, margin), self.board.pixel_h - margin)
 
-    def _center_blocked(self, x: float, y: float) -> bool:
+    def _slide(self, dx: float, dy: float) -> None:
+        if dx == 0.0 and dy == 0.0:
+            return
+        nx = self.px + dx
+        ny = self.py + dy
+        if self._can_occupy(nx, ny):
+            self.px, self.py = nx, ny
+
+    def _can_occupy(self, x: float, y: float) -> bool:
         cx, cy = self.board.cell_at(x, y)
         if not self.board.in_bounds(cx, cy):
+            return False
+        if self.board.grid[cy][cx] == EMPTY:
             return True
-        return self.board.grid[cy][cx] != EMPTY
+        # A finished wall occupies the cell under the blaster. Allow sliding
+        # inside that cell so a later step can leave into open field.
+        ox, oy = self.board.cell_at(self.px, self.py)
+        return (cx, cy) == (ox, oy)
 
     def _blocker_cells(self) -> set[tuple[int, int]]:
         blocked: set[tuple[int, int]] = set()

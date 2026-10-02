@@ -413,7 +413,7 @@ class Renderer:
             y += 6
         y += 8
         y = self._label(x, y, "CONTROLS", self.accent)
-        for line in ("Mouse or arrows to move", "Click or Space to fire", "Right click or Q to rotate", "Esc pauses"):
+        for line in ("WASD or arrows to move", "Move the mouse to place it too", "Click or Space to fire", "Right click or Q to rotate", "Esc pauses"):
             y = self._text(x, y, line, (206, 214, 230), self.small)
         credit = self.tiny.render("Inspired by Barrack, Ambrosia 1996", True, (120, 132, 156))
         self.screen.blit(credit, (x, WIN_H - 48))
@@ -455,7 +455,7 @@ class Renderer:
         for line in _wrap(self.small, world.spec.hint, PANEL_W - 28):
             y = self._text(x, y, line, (168, 180, 204), self.small)
         foot = WIN_H - 78
-        self._text(x, foot, "Mouse or arrows    Click / Space fires", (130, 142, 166), self.tiny)
+        self._text(x, foot, "WASD or mouse    Click / Space fires", (130, 142, 166), self.tiny)
         extra = "Right click rotates    R restarts" if state == "pause" else "Right click or Q rotates"
         self._text(x, foot + 18, extra, (130, 142, 166), self.tiny)
 

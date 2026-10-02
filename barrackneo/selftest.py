@@ -1,6 +1,6 @@
 """Rules tests that do not open a window."""
 
-from barrackneo.board import FILLED, TRAIL, Board
+from barrackneo.board import EMPTY, FILLED, TRAIL, Board
 from barrackneo.settings import CELL
 from barrackneo.world import Ball, World
 
@@ -166,6 +166,46 @@ def test_slow_cuts_enemy_motion() -> None:
     assert plain.balls[0].x - px > (slowed.balls[0].x - px) * 1.5
 
 
+def test_blaster_moves_and_can_fire_again() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
+    world.pointer = None
+    world.move = (1.0, 0.0)
+    start_x = world.px
+    world.update(0.05)
+    assert world.px > start_x + 10
+
+    world.move = (0.0, 0.0)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    bx, by = world.board.cell_center(cx, cy - 5)
+    world.balls.append(Ball(x=bx, y=by, vx=0.0, vy=0.0, speed=0.0, kind="ball"))
+    world.px, world.py = world.board.cell_center(cx, cy)
+    world.want_fire = True
+    _until_idle(world)
+    assert world.phase == "play"
+    assert not world.building
+    landed = world.board.cell_at(world.px, world.py)
+    assert world.board.grid[landed[1]][landed[0]] == EMPTY
+    world.want_fire = True
+    world.update(0.05)
+    assert world.building
+    assert world.lives == 3
+
+
+def test_blaster_can_leave_a_filled_cell() -> None:
+    world = World(level=1, populate=False, cols=24, rows=16)
+    _quiet(world)
+    cx, cy = world.board.cell_at(world.px, world.py)
+    world.board.set_cell(cx, cy, FILLED)
+    world.pointer = None
+    world.move = (1.0, 0.0)
+    for _ in range(6):
+        world.update(0.05)
+    nx, ny = world.board.cell_at(world.px, world.py)
+    assert (nx, ny) != (cx, cy)
+    assert world.board.grid[ny][nx] == EMPTY
+
+
 def test_haste_builds_the_line_faster() -> None:
     slow = World(level=1, populate=False, cols=24, rows=16)
     fast = World(level=1, populate=False, cols=24, rows=16)
@@ -199,6 +239,8 @@ def main() -> None:
         test_enemy_side_stays_open,
         test_line_stops_at_an_existing_wall,
         test_slow_cuts_enemy_motion,
+        test_blaster_moves_and_can_fire_again,
+        test_blaster_can_leave_a_filled_cell,
         test_haste_builds_the_line_faster,
         test_cell_size_matches_centers,
     ]
